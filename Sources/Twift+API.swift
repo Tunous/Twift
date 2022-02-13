@@ -356,7 +356,7 @@ public struct TwitterAPIDataIncludesAndMeta<Resource: Codable, Includes: Codable
   public let errors: [TwitterAPIError]?
 }
 
-internal enum HTTPMethod: String {
+public enum HTTPMethod: String {
   case GET, POST, DELETE, PUT
 }
 
