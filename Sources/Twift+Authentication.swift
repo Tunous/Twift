@@ -40,6 +40,7 @@ extension Twift {
   
   /// A convenience class for acquiring user access token
   public class Authentication: NSObject, ASWebAuthenticationPresentationContextProviding {
+
     /// Request user credentials by presenting Twitter's web-based authentication flow
     /// - Parameters:
     ///   - presentationContextProvider: Optional presentation context provider. When not provided, this function will handle the presentation context itself.
@@ -52,83 +53,104 @@ extension Twift {
       presentationContextProvider: ASWebAuthenticationPresentationContextProviding? = nil,
       with completion: @escaping ((userCredentials: OAuthCredentials?, error: Error?)) -> Void
     ) {
-      // MARK:  Step one: Obtain a request token
-      var stepOneRequest = URLRequest(url: URL(string: "https://api.twitter.com/oauth/request_token")!)
-      
-      stepOneRequest.oAuthSign(
-        method: "POST",
-        urlFormParameters: ["oauth_callback" : callbackURL.absoluteString],
-        consumerCredentials: clientCredentials
-      )
-      
-      var oauthToken: String = ""
-      
-      URLSession.shared.dataTask(with: stepOneRequest) { (requestTokenData, _, error) in
-        guard let requestTokenData = requestTokenData,
-              let response = String(data: requestTokenData, encoding: .utf8)?.urlQueryStringParameters,
-              let token = response["oauth_token"] else {
-                return completion((
-                  userCredentials: nil,
-                  error: TwiftError.OAuthTokenError
-                ))
-              }
-        
-        oauthToken = token
-        
-        // MARK:  Step two: Redirecting the user
-        let authURL = URL(string: "https://api.twitter.com/oauth/authorize?oauth_token=\(oauthToken)")!
-
-        guard let callbackURLScheme = callbackURL.scheme else {
-          preconditionFailure("Malformed callback URL. Scheme is required.")
+      Task {
+        do {
+          let result = try await requestUserCredentials(clientCredentials: clientCredentials, callbackURL: callbackURL, presentationContextProvider: presentationContextProvider)
+          completion((result, nil))
+        } catch {
+          completion((nil, error))
         }
-        
-        let authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackURLScheme) { (url, error) in
-          if let error = error {
-            return completion((nil, error))
-          }
-          
-          if let url = url {
-            guard let queryItems = url.query?.urlQueryStringParameters,
-                  let oauthToken = queryItems["oauth_token"],
-                  let oauthVerifier = queryItems["oauth_verifier"] else {
-                    return
-                  }
-            
-            // MARK:  Step three: Converting the request token into an access token
-            
-            var stepThreeRequest = URLRequest(url: URL(string: "https://api.twitter.com/oauth/access_token?oauth_verifier=\(oauthVerifier)")!)
-            
-            stepThreeRequest.oAuthSign(
-              method: "POST",
-              urlFormParameters: ["oauth_token" : oauthToken],
-              consumerCredentials: clientCredentials
-            )
-            
-            URLSession.shared.dataTask(with: stepThreeRequest) { (data, _, error) in
-              guard let data = data,
-                    let response = String(data: data, encoding: .utf8)?.urlQueryStringParameters,
-                    let encoded = try? JSONEncoder().encode(response) else {
-                      return completion((nil, error))
-                    }
-              
-              do {
-                let userCredentials = try JSONDecoder().decode(OAuthCredentials.self, from: encoded)
-                completion((userCredentials: userCredentials, error: nil))
-              } catch {
-                print(error)
-              }
-            }.resume()
-          }
-        }
-        
-        DispatchQueue.main.async {
-          authSession.presentationContextProvider = presentationContextProvider ?? self
-          authSession.start()
-        }
-        
-      }.resume()
-      
+      }
     }
+
+    /// Request user credentials by presenting Twitter's web-based authentication flow
+    /// - Parameters:
+    ///   - presentationContextProvider: Optional presentation context provider. When not provided, this function will handle the presentation context itself.
+    ///   - callbackURL: The callback URL as configured in your Twitter application settings
+    ///
+    /// - Returns: Credentials which users are responsible for storing for later use.
+    public func requestUserCredentials(
+      clientCredentials: OAuthCredentials,
+      callbackURL: URL,
+      presentationContextProvider: ASWebAuthenticationPresentationContextProviding? = nil
+    ) async throws -> OAuthCredentials {
+        // MARK:  Step one: Obtain a request token
+        var stepOneRequest = URLRequest(url: URL(string: "https://api.twitter.com/oauth/request_token")!)
+
+        stepOneRequest.oAuthSign(
+          method: "POST",
+          urlFormParameters: ["oauth_callback" : callbackURL.absoluteString],
+          consumerCredentials: clientCredentials
+        )
+
+        return try await withCheckedThrowingContinuation { continuation in
+          URLSession.shared.dataTask(with: stepOneRequest) { (requestTokenData, _, error) in
+            guard let requestTokenData = requestTokenData,
+                  let response = String(data: requestTokenData, encoding: .utf8)?.urlQueryStringParameters,
+                  let token = response["oauth_token"] else {
+                    return continuation.resume(throwing: TwiftError.OAuthTokenError)
+                  }
+
+            let oauthToken = token
+
+            // MARK:  Step two: Redirecting the user
+            let authURL = URL(string: "https://api.twitter.com/oauth/authorize?oauth_token=\(oauthToken)")!
+
+            guard let callbackURLScheme = callbackURL.scheme else {
+              preconditionFailure("Malformed callback URL. Scheme is required.")
+            }
+
+            let authSession = ASWebAuthenticationSession(url: authURL, callbackURLScheme: callbackURLScheme) { (url, error) in
+              if let error = error {
+                return continuation.resume(throwing: error)
+              }
+
+              if let url = url {
+                guard let queryItems = url.query?.urlQueryStringParameters,
+                      let oauthToken = queryItems["oauth_token"],
+                      let oauthVerifier = queryItems["oauth_verifier"] else {
+                        return continuation.resume(throwing: TwiftError.OAuthTokenError)
+                      }
+
+                // MARK:  Step three: Converting the request token into an access token
+
+                var stepThreeRequest = URLRequest(url: URL(string: "https://api.twitter.com/oauth/access_token?oauth_verifier=\(oauthVerifier)")!)
+
+                stepThreeRequest.oAuthSign(
+                  method: "POST",
+                  urlFormParameters: ["oauth_token" : oauthToken],
+                  consumerCredentials: clientCredentials
+                )
+
+                URLSession.shared.dataTask(with: stepThreeRequest) { (data, _, error) in
+                  if let error = error {
+                    return continuation.resume(throwing: error)
+                  }
+
+                  guard let data = data,
+                        let response = String(data: data, encoding: .utf8)?.urlQueryStringParameters else {
+                          return continuation.resume(throwing: TwiftError.OAuthTokenError)
+                        }
+
+                  do {
+                    let encoded = try JSONEncoder().encode(response)
+                    let userCredentials = try JSONDecoder().decode(OAuthCredentials.self, from: encoded)
+                    return continuation.resume(returning: userCredentials)
+                  } catch {
+                    return continuation.resume(throwing: error)
+                  }
+                }.resume()
+              }
+            }
+
+            DispatchQueue.main.async {
+              authSession.presentationContextProvider = presentationContextProvider ?? self
+              authSession.start()
+            }
+
+          }.resume()
+        }
+      }
     
     public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
       return ASPresentationAnchor()
