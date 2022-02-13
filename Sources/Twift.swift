@@ -43,7 +43,7 @@ public class Twift: NSObject, ObservableObject {
   
   /// Swift's native implementation of ISO 8601 date decoding defaults to a format that doesn't include milliseconds, causing decoding errors because of Twitter's date format.
   /// This function returns a decoder which can decode Twitter's date formats, as well as converting keys from snake_case to camelCase.
-  static internal func initializeDecoder() -> JSONDecoder {
+  static public func initializeDecoder() -> JSONDecoder {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     
