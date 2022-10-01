@@ -18,6 +18,7 @@ extension Twift {
         components.host = "api.twitter.com"
         components.path = path
         components.queryItems = queryItems
+        components.percentEncodedQuery = components.percentEncodedQuery?.replacingOccurrences(of: ":", with: "%3A")
 
         let url = components.url!
         var request = URLRequest(url: url)
